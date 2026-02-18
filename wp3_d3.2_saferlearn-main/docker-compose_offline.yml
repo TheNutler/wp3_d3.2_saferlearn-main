@@ -1,0 +1,199 @@
+networks:
+    mynetwork:
+        name: ${NAME}-saferlearn-network
+        ipam:
+            driver: default
+            config:
+                - subnet: ${SUBNET}
+
+services:
+    zookeeper:
+        image: confluentinc/cp-zookeeper:7.4.4
+        container_name: zookeeper
+        environment:
+            ZOOKEEPER_CLIENT_PORT: 2181
+            ZOOKEEPER_TICK_TIME: 2000
+        ports:
+            - 2181
+        networks:
+            - mynetwork
+
+    kafka:
+        image: confluentinc/cp-kafka:7.4.4
+        container_name: kafka
+        depends_on:
+            - zookeeper
+        ports:
+            - 9092
+        environment:
+            KAFKA_BROKER_ID: 1
+            KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+            KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+            KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+            KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+            KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+        networks:
+            - mynetwork
+    # zookeeper:
+    #     image: saferlearn-zookeeper
+    #     ports:
+    #         - "2181"
+    #     networks:
+    #         - mynetwork
+    # kafka:
+    #     image: saferlearn-kafka
+    #     build:
+    #         context: ./kafka-docker
+    #     ports:
+    #         - "9092"
+    #     environment:
+    #         KAFKA_ADVERTISED_HOST_NAME: "localhost"
+    #         KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+    #         KAFKA_CREATE_TOPICS: "model_mpc:1:1,model_he:1:1,model_pate:1:1,votes_he:1:1,nb_votes:1:1,params:1:1,keys:1:1"
+    #         KAFKA_MESSAGE_MAX_BYTES: 2000000
+    #         LOG4J_LOGGER_KAFKA: WARN
+    #         LOG4J_LOGGER_ORG_APACHE_KAFKA: WARN
+    #     depends_on:
+    #         - zookeeper
+    #     networks:
+    #         - mynetwork
+
+    aggregator:
+        image: saferlearn-platform:${SAFERLEARN_VERSION}
+        build:
+            context: .
+        command:
+            [
+                "python3",
+                "/app_saferlearn/computing_party.py",
+                "--protocol",
+                "mascot",
+                "-t",
+                "COMPUTING_PARTY",
+                "-p",
+                "0",
+                "-N",
+                "3",
+                "pate_aggregation",
+            ]
+        networks:
+            - mynetwork
+        environment:
+            - "RPYC_PORT=${COMPUTING_PARTY_RPYC_PORT}"
+            - "ORCHESTRATOR_HOST=${ORCH_HOST}"
+            - "ORCHESTRATOR_PORT=${ORCH_PORT}"
+        depends_on:
+            - orchestrator
+        ports:
+            - ${COMPUTING_PARTY_RPYC_PORT}
+        volumes:
+            - ./src:/app_saferlearn
+            - .env:/app_saferlearn/.env
+            - ./trained_nets_gpu:/tmp/trained_nets
+            - ./public-dataset:/data/public-dataset
+            - ./MP-SPDZ-source/Player-Data:/MPC/Player-Data
+
+    teacher:
+        image: saferlearn-platform:${SAFERLEARN_VERSION}
+        build:
+            context: .
+        command:
+            [
+                "python3",
+                "/app_saferlearn/data_owner_cli.py",
+                "--orchestrator-host",
+                "${ORCH_HOST}",
+                "--orchestrator-port",
+                "${ORCH_PORT}",
+                "--data-format",
+                "Radio"
+            ]
+        networks:
+            - mynetwork
+        depends_on:
+            - orchestrator
+            - kafka
+        ports:
+            - ${DATA_OWNER_RPYC_PORT}
+        env_file:
+            - .env
+        volumes:
+            - ./src:/app_saferlearn
+            - .env:/app_saferlearn/.env
+            - ./trained_nets_gpu:/tmp/trained_nets
+            - ./public-dataset:/data/public-dataset
+            - ./MP-SPDZ-source/Player-Data:/MPC/Player-Data
+            - ./pate-teacher.cpp:/MPC/pate-teacher.cpp
+            - ./tff/credentials/ssh:/root/.ssh
+            - ./tff/config_ssh/sshd:/etc/pam.d/sshd
+            - ./tff/config_ssh/sshd_config:/etc/ssh/sshd_config
+            - ./fl_datasets:/Data
+            - ./src/remote_executor_service.py:/remote_executor_service.py
+
+    orchestrator:
+        image: saferlearn-platform:${SAFERLEARN_VERSION}
+        build:
+            context: .
+        environment:
+            - "ORCHESTRATOR_HOST=${ORCH_HOST}"
+            - "SAFERLEARN_PORT=${ORCH_PORT}"
+            - "ORCHESTRATOR_PORT=${ORCH_PORT}"
+        command: ["python3", "/app_saferlearn/api.py", "--datasets-path", "/app_saferlearn/input-data/"]
+        networks:
+            - mynetwork
+        ports:
+            - ${ORCH_PORT_EXPOSED}:${ORCH_PORT}
+        volumes:
+            - ./src:/app_saferlearn
+            - .env:/app_saferlearn/.env
+            - ./trained_nets:/tmp/trained_nets
+
+    model_owner:
+        image: saferlearn-platform:${SAFERLEARN_VERSION}
+        build:
+            context: .
+        command: ["python3", "/app_saferlearn/model_owner.py"]
+        volumes:
+            - ./src:/app_saferlearn
+        networks:
+            - mynetwork
+        depends_on:
+            - orchestrator
+            - kafka
+        # restart: always
+
+    # ui:
+    #     image: saferlearn-ui:${SAFERLEARN_VERSION}
+    #     build:
+    #         context: ./client
+    #     ports:
+    #         - ${UI_PORT}:4200
+    #     networks:
+    #         - mynetwork
+
+    # federated_aggregator:
+    #     image: saferlearn-platform:${SAFERLEARN_VERSION}
+    #     volumes:
+    #         - ./tff/credentials/ssh:/root/.ssh
+    #         - ./tff/config_ssh/sshd:/etc/pam.d/sshd
+    #         - ./tff/config_ssh/sshd_config:/etc/ssh/sshd_config
+    #         - ./src:/app_saferlearn
+    #         - ./public-dataset:/data/public-dataset
+    #         - ./saved_model:/MPC/saved_model
+    #     command:
+    #         [
+    #             "python3",
+    #             "/app_saferlearn/tff_central.py",
+    #             "-t",
+    #             "type5"
+    #         ]
+    #     networks:
+    #         - mynetwork
+    #     environment:
+    #         - 'RPYC_PORT=${FL_RPYC_PORT}'
+    #         - 'ORCHESTRATOR_HOST=${ORCH_HOST}'
+    #         - 'ORCHESTRATOR_PORT=${ORCH_PORT}'
+    #     depends_on:
+    #         - orchestrator
+    #     ports:
+    #         - ${FL_RPYC_PORT}

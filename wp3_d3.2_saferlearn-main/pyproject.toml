@@ -1,0 +1,37 @@
+[project]
+name = "saferlearn-framework"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "alive-progress>=3.2.0",
+    "cachetools~=3.1.1",
+    "datasets>=3.3.2",
+    "dm-tree~=0.1.1",
+    "dotenv>=0.9.9",
+    "flask>=3.1.0",
+    "flask-cors>=5.0.1",
+    "kafka-python>=2.0.6",
+    "matplotlib>=3.10.1",
+    "nbdev>=2.3.35",
+    "nest-asyncio>=1.6.0",
+    "numpy>=2.2.3",
+    "openpyxl>=3.1.5",
+    "paho-mqtt>=1.5.1",
+    "pandas>=2.2.3",
+    "paramiko>=3.5.1",
+    "protobuf==3.20.0",
+    "psutil>=7.0.0",
+    "pycuda>=2025.1",
+    "requests>=2.32.3",
+    "rich==13.3.1",
+    "rpyc>=6.0.1",
+    "scikit-learn>=1.1.2",
+    "seaborn>=0.13.2",
+    "torch>=2.6.0",
+    "torchvision>=0.21.0",
+    "typeguard>=4.4.2",
+    "typer>=0.15.2",
+    "xlrd==1.2.0",
+]

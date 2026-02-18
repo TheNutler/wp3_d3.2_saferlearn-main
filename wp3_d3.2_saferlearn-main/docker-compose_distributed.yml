@@ -1,0 +1,206 @@
+version: '3.3'
+
+services:
+    zookeeper:
+        image: zookeeper
+        container_name: zookeper
+        ports:
+            - "2181"
+        network_mode: host
+
+    kafka:
+        image: saferlearn-kafka
+        container_name: kafka
+        build:
+            context: ./kafka-docker
+        ports:
+            - "9092"
+        environment:
+            KAFKA_ADVERTISED_HOST_NAME: "kafka"
+            KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+            KAFKA_CREATE_TOPICS: "model_mpc:1:1,model_he:1:1,votes_he:1:1,nb_votes:1:1,params:1:1"
+        depends_on:
+            - zookeeper
+        networks:
+            network_mode: host
+
+    aggregator0:
+        image: saferlearn-platform
+        build:
+            context: .
+        container_name: aggregator_0
+        command:
+            [
+                "python3",
+                "computing_party.py",
+                "--protocol",
+                "mascot",
+                "-t",
+                "COMPUTING_PARTY",
+                "-p",
+                "0",
+                "-N",
+                "3",
+                "pate_aggregation"
+            ]
+        hostname: aggregator_0
+        networks:
+            mynetwork:
+                ipv4_address: 10.0.0.200
+        environment:
+            - 'RPYC_PORT=${DATA_OWNER_RPYC_PORT}'
+            - 'ORCHESTRATOR_HOST=${ORCH_HOST}'
+        depends_on:
+            - orchestrator
+        ports:
+            - 1234
+            - 14000:14000
+        volumes:
+            - ./src:/opt
+            - ./trained_nets:/tmp/trained_nets
+            - ./public-dataset:/data/public-dataset
+            - ./MP-SPDZ-source/Player-Data:/MPC/Player-Data
+        network_mode: host
+
+    aggregator1:
+        image: saferlearn-platform
+        build:
+            context: .
+        container_name: aggregator_1
+        command:
+            [
+                "python3",
+                "computing_party.py",
+                "--protocol",
+                "mascot",
+                "-t",
+                "COMPUTING_PARTY",
+                "-p",
+                "1",
+                "-N",
+                "3",
+                "pate_aggregation"
+            ]
+        hostname: aggregator_1
+        network_mode: host
+        environment:
+            - 'RPYC_PORT=${DATA_OWNER_RPYC_PORT}'
+            - 'ORCHESTRATOR_HOST=${ORCH_HOST}'
+
+        depends_on:
+            - orchestrator
+        ports:
+            - 1234
+            - 14001:14001
+        volumes:
+            - ./src:/opt
+            - ./trained_nets:/tmp/trained_nets
+            - ./public-dataset:/data/public-dataset
+            - ./MP-SPDZ-source/Player-Data:/MPC/Player-Data
+
+    aggregator2:
+        image: saferlearn-platform
+        build:
+            context: .
+        container_name: aggregator_2
+        command:
+            [
+                "python3",
+                "computing_party.py",
+                "--protocol",
+                "mascot",
+                "-t",
+                "COMPUTING_PARTY",
+                "-p",
+                "2",
+                "-N",
+                "3",
+                "pate_aggregation"
+            ]
+        hostname: aggregator_2
+        network_mode: host
+        environment:
+            - 'RPYC_PORT=${DATA_OWNER_RPYC_PORT}'
+            - 'ORCHESTRATOR_HOST=${ORCH_HOST}'
+        depends_on:
+            - orchestrator
+        ports:
+            - 1234
+            - 14002:14002
+        volumes:
+            - ./src:/opt
+            - ./trained_nets:/tmp/trained_nets
+            - ./public-dataset:/data/public-dataset
+            - ./MP-SPDZ-source/Player-Data:/MPC/Player-Data
+
+    teacher:
+        image: saferlearn-platform
+        build:
+            context: .
+        command:
+            [
+                "python3",
+                "data_owner.py",
+                "-t",
+                "Radio",
+                "-N",
+                "3",
+                "-B",
+                "10",
+                "pate-teacher"
+            ]
+        network_mode: host
+        depends_on:
+            - aggregator0
+            - aggregator1
+            - aggregator2
+            - orchestrator
+            - kafka
+        environment:
+            - 'RPYC_PORT=${DATA_OWNER_RPYC_PORT}'
+            - 'ORCHESTRATOR_HOST=${ORCH_HOST}'
+        ports:
+            - 1234
+        volumes:
+            - ./src:/opt
+            - ./trained_nets:/tmp/trained_nets
+            - ./public-dataset:/data/public-dataset
+            - ./MP-SPDZ-source/Player-Data:/MPC/Player-Data
+
+    orchestrator:
+        image: saferlearn-platform
+        build:
+            context: .
+        container_name: orechestrator
+        environment:
+            - 'RPYC_PORT=${DATA_OWNER_RPYC_PORT}'
+            - 'ORCHESTRATOR_HOST=${ORCH_HOST}'
+        command: api.py
+        ports:
+            - 5000:5000
+        volumes:
+            - ./src:/opt
+            - ./trained_nets:/tmp/trained_nets
+        network_mode: host
+
+    model_owner:
+        image: saferlearn-platform
+        build:
+            context: .
+        container_name: model_owner
+        command: [ "python3", "model_owner.py" ]
+        volumes:
+            - ./src:/opt
+        depends_on:
+            - orchestrator
+            - kafka
+        network_mode: host
+
+    ui:
+        image: saferlearn-ui
+        build:
+            context: ./client
+        container_name: saferlearn_ui
+        ports:
+            - 4200:4200
+        network_mode: host

@@ -1,0 +1,9 @@
+client/
+kafka-docker/
+trained_nets/
+trained_nets_gpu/
+public-dataset/
+.vscode/
+**worker.db**
+**/data/**
+.git/

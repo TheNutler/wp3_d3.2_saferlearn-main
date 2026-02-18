@@ -1,0 +1,46 @@
+flask
+flask-cors
+numpy
+# numpy==1.18.4
+rpyc
+requests
+kafka-python
+scikit-learn>=1.1.2
+torch
+torchvision
+pycuda
+psutil
+
+# absl-py
+# attrs~=19.3.0
+cachetools~=3.1.1
+dm-tree~=0.1.1
+# grpcio~=1.29.0
+# h5py
+pandas
+# portpicker~=1.3.1
+# retrying~=1.3.3
+# semantic-version~=2.8.5
+# tensorflow-model-optimization~=0.3.0
+# tensorflow-privacy~=0.4.0
+# tensorflow==2.2.0
+# tensorflow-addons==0.10.0
+# tensorflow==2.8.0
+# tensorflow-addons==0.16.1
+rich==13.3.1
+
+protobuf==3.20.0
+# tensorflow_federated==0.16.1
+datasets
+
+seaborn
+xlrd==1.2.0
+openpyxl
+matplotlib
+nest_asyncio
+paho-mqtt>=1.5.1
+nbdev
+paramiko
+
+typer
+typeguard

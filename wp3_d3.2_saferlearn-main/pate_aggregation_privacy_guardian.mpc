@@ -1,0 +1,229 @@
+# coding: latin-1
+"""
+  Secure aggregator using Multi-Party Computation that determines the most chosen label by the teachers.
+
+  Uses external teachers to computing parties (as of now) providing the input labels and receiving an authenticated result.
+  See pate-teacher.cpp for teacher (and setup instructions).
+  
+  Wait for MAX_NUM_TEACHERS to join the game or teacher finish flag to be sent
+  before calculating the maximum.
+
+  Note each teacher connects in a single thread and so is potentially blocked.
+  
+  Each round / game will reset and so this runs indefinitiely.
+"""
+
+# TODO
+# [x] check if Array can be instanciated with run-time value or only compile-time -> size must be known at compile time
+# [ ] check if operations are trully secure
+# [x] check the number of triple required for the computation
+# [ ] -> if low maybe try on garbled circuits
+# [ ] noise maybe ?
+# [x] multi inputs integration -> multi array or multi rounds
+# [x]  -> benchmark batch vs single vote
+# [ ] compile -a -> asm : we can study the assembly / Ghidra ? (-d for debug)
+# [ ] -D dead code elimination
+# [ ] binary arithmetics / mixed ?
+
+# Values to set at compile time:
+#  [x] number of rounds -> useless since we keep listening as long as teachers have data
+#  [x] maybe size of batch (number of labels communicated at a time)
+#  [x] maybe set MAX_NUM_TEACHERS when compiling
+
+from Compiler.types import sint, regint, Array, MemValue, cint
+from Compiler.instructions import listen, acceptclientconnection, crash
+from Compiler.library import print_ln, print_ln_if, do_while, for_range, if_, if_e, else_
+from Compiler.util import if_else
+
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("progname")
+parser.add_argument("--batch-size", help="Determine the size of batchs, i.e the number of votes sent by teachers for each round.", type=int, default=10)
+parser.add_argument("--max-num-teachers", help="Determine the max number of teachers. Setting a large number may impact the performances.", type=int, default=10)
+parser.add_argument("--rounds", help="Determine the number of rounds", type=int, default=0)
+parser.add_argument("--port", help="Secify the port used as base", type=int, default=14000)
+parser.add_argument("-M", "--preserve-mem-order", action='store_true')
+parser.add_argument("-D", "--dead-code-elimination", action='store_true')
+parser.add_argument("-v", "--verbose", action='store_true')
+args = parser.parse_args()
+
+
+PORTNUM = args.port
+BATCH_SIZE = args.batch_size
+MAX_NUM_TEACHERS = args.max_num_teachers
+N_ROUNDS = args.rounds
+
+def accept_teacher():
+    """
+    Accept a socket connection returning the id of the teacher and the value of the last-flag.
+    """
+    teacher_socket_id = regint()
+    acceptclientconnection(teacher_socket_id, PORTNUM)
+    last_flag = regint.read_from_socket(teacher_socket_id)
+    return teacher_socket_id, last_flag
+
+def teacher_input(teacher_socket_id, size_input):
+    """
+    Send share of random value, receive input and deduce share.
+    """
+    teacher_inputs = Array.create_from(sint.receive_from_client(size_input, teacher_socket_id))
+
+    return teacher_inputs
+
+
+def determine_winner(number_teachers, teachers_votes, privacy_guardian_id):
+    """Return an Array of vote values corresponding to the votes the most popular."""
+    # For now, we don't handle noise nor equalities
+
+    votes_number = sint.Matrix(MAX_NUM_TEACHERS, BATCH_SIZE)
+
+    winning_label = Array(BATCH_SIZE, sint)
+    winning_label.assign_all(sint(-1))
+
+    max_nb_votes = Array(1, sint)
+
+    @for_range(BATCH_SIZE)
+    def loop_vote(vote):
+
+        noise = teacher_input(privacy_guardian_id, MAX_NUM_TEACHERS)
+
+        max_nb_votes[0] = sint(1) + noise[0]
+        print_ln('noise : %s', noise[0].reveal())
+        winning_label[vote] = teachers_votes[0][vote]
+
+        @for_range(1, MAX_NUM_TEACHERS)
+        def loop_teacher(teacher_i):
+            # Initialize the vote count
+            votes_number[teacher_i][vote] = sint(0)
+
+            @for_range(MAX_NUM_TEACHERS)
+            def loop_other_teacher(teacher_j):
+                # +1 if a teacher has the same vote, +0 otherwise
+                votes_number[teacher_i][vote] += (teachers_votes[teacher_i][vote] == teachers_votes[teacher_j][vote])
+                return teacher_j < teacher_i
+            # Add noise
+            votes_number[teacher_i][vote] += noise[teacher_i]
+            print_ln('noise : %s', noise[teacher_i].reveal())
+            # Check if new max
+            new_max = votes_number[teacher_i][vote].greater_than(max_nb_votes[0])
+            # Securely choose between two values according to a secret value
+            max_nb_votes[0] = if_else(new_max, votes_number[teacher_i][vote], max_nb_votes[0])
+            winning_label[vote] = if_else(new_max, teachers_votes[teacher_i][vote], winning_label[vote])
+            return teacher_i < number_teachers - 1
+      
+    return winning_label
+
+
+def write_label_to_teachers(sockets, number_teachers, correct_label):
+    """Send share of winning label to all teachers who joined game."""
+    # To be changed to send to the student
+
+    authenticated_data = Array(3*BATCH_SIZE, sint)
+    @for_range(BATCH_SIZE)
+    def loop_labels(label):
+        authenticated_data[3*label] = correct_label[label]
+        authenticated_data[3*label + 1] = sint.get_random_triple()[0]
+        authenticated_data[3* label + 2] = correct_label[label] * authenticated_data[3*label + 1]
+
+    @for_range(MAX_NUM_TEACHERS)
+    def loop_body(teacher):
+        sint.write_shares_to_socket(sockets[teacher], authenticated_data.get_vector())
+        return teacher < number_teachers - 1
+
+
+def main():
+    """Listen in while loop for players to join a game.
+    Once maxiumum reached or have notified that round finished, run comparison and return result."""
+    # Start listening for teacher socket connections
+    listen(PORTNUM)
+    print_ln('Listening for teacher connections on base port %s', PORTNUM)
+
+    # Array with the number of 'correct' votes for each of the teacher
+    total_number_of_correct_votes = Array(MAX_NUM_TEACHERS,sint)
+    total_number_of_correct_votes.assign_all(sint(0))
+
+    number_of_votes = Array(1, cint)
+    number_of_votes[0] = 0
+   
+    # Fraud detection
+    # 1 -> the teacher seems honest
+    # 0 -> the teacher makes too many errors compared to other models
+    fraud_detection = Array(MAX_NUM_TEACHERS, sint)
+    fraud_detection.assign_all(sint(1))
+    # less than 70% of correct responses is suspect 
+    fraud_threshold = cint(7)
+    
+    def game_loop(_=None):
+        print_ln('Starting a new round of aggregation.')
+        # Teachers socket id (integer).
+        teacher_sockets = Array(MAX_NUM_TEACHERS + 1, regint)
+        # Number of teachers
+        number_teachers = MemValue(regint(0))
+        # Teachers secret input.
+        teachers_votes = sint.Matrix(MAX_NUM_TEACHERS, BATCH_SIZE)
+        # Keep track of received inputs
+        seen = Array(MAX_NUM_TEACHERS + 1, regint)
+        seen.assign_all(0)                
+
+        # Loop round waiting for each teacher to connect
+        @for_range(MAX_NUM_TEACHERS + 1) # taking account of the privacy guardian
+        def teacher_connections(_):
+            teacher_id, last_flag = accept_teacher()
+
+            @if_e(last_flag == 2)
+            def isPrivacyGuardian():
+                print_ln('Received connection of guardian %s', teacher_id)
+                teacher_sockets[teacher_id] = teacher_id
+                seen[teacher_id] = 1
+
+            @else_
+            def isTeacher():
+                @if_(teacher_id > MAX_NUM_TEACHERS)
+                def _():
+                    print_ln("Teacher's id too high")
+                    crash()
+                teacher_sockets[teacher_id] = teacher_id # this line seem useless
+                seen[teacher_id] = 1
+                @if_(last_flag == 1)
+                def _():
+                    number_teachers.write(teacher_id + 1)
+
+                inputs = teacher_input(teacher_id, BATCH_SIZE)
+                @for_range(BATCH_SIZE)
+                def loop_vote(vote_index):
+                    teachers_votes[teacher_id][vote_index] = inputs[vote_index]
+
+            return (sum(seen) < number_teachers + 1) + (number_teachers == 0)
+
+        number_of_votes[0] += BATCH_SIZE
+            
+        winning_label = determine_winner(number_teachers, teachers_votes, teacher_sockets[number_teachers])
+        write_label_to_teachers(teacher_sockets, number_teachers, winning_label)
+        
+      	# updating the total_number_of_correct_votes table, if a vote was correct +1 for the teacher
+        @for_range(MAX_NUM_TEACHERS)
+        def loop_body(teacher):
+            # Should we detect frauders at the end of each batch of for each vote ?
+            @for_range(BATCH_SIZE)
+            def loop_body(vote):
+                total_number_of_correct_votes[teacher] += (winning_label[vote] == teachers_votes[teacher][vote])
+            fraud_detection[teacher] = total_number_of_correct_votes[teacher].greater_equal((fraud_threshold * number_of_votes[0]) / 10)
+            # Right now, we can't do much since we only have the id to ientify teachers and with our protocol, they are easily forgeable
+            print_ln_if(fraud_detection[teacher].equal(0).reveal(), 'Fraud detection: %s with %s less than threshold %s', teacher, total_number_of_correct_votes[teacher].reveal(), (fraud_threshold * number_of_votes[0]) / 10)
+            return teacher < number_teachers - 1
+
+        # close_connections(number_teachers)
+
+        return True
+
+    if N_ROUNDS > 0:
+        print('run %d rounds' % N_ROUNDS)
+        for_range(N_ROUNDS)(game_loop)
+        
+
+    else:
+        print('run forever')
+        do_while(game_loop)
+
+main()
